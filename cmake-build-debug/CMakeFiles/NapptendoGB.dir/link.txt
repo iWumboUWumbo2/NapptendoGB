@@ -1,3 +1,0 @@
-"C:\Program Files\JetBrains\CLion 2021.1.2\bin\cmake\win\bin\cmake.exe" -E rm -f CMakeFiles\NapptendoGB.dir/objects.a
-C:\MinGW\bin\ar.exe cr CMakeFiles\NapptendoGB.dir/objects.a @CMakeFiles\NapptendoGB.dir\objects1.rsp
-C:\MinGW\bin\gcc.exe -g -Wl,--whole-archive CMakeFiles\NapptendoGB.dir/objects.a -Wl,--no-whole-archive -o NapptendoGB.exe -Wl,--out-implib,libNapptendoGB.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\NapptendoGB.dir\linklibs.rsp
