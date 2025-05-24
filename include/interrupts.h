@@ -1,13 +1,11 @@
 #ifndef INTERRUPTS_H
 #define INTERRUPTS_H
 
+#include "types.h"
 #include "bus.h"
 
 #define IE  0xFFFF
 #define IF  0xFF0F
-
-typedef struct interrupt interrupt_t;
-typedef struct bus bus_t;
 
 struct interrupt {
     uint8_t IME;

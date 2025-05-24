@@ -2,6 +2,7 @@
 #define TIMERS_H
 
 #include <stdint.h>
+#include "types.h"
 #include "bus.h"
 
 #define TIMA    0xFF05
@@ -10,9 +11,6 @@
 #define DIV     0xFF04
 
 #define CLOCKSPEED  4194304
-
-typedef struct timer timergb_t;
-typedef struct bus bus_t;
 
 struct timer {
     int32_t timer_counter;

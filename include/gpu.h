@@ -2,10 +2,8 @@
 #define GPU_H
 
 #include <stdint.h>
-
+#include "types.h"
 #include "bus.h"
-
-typedef struct gpu gpu_t;
 
 #define LCDC    0xFF40
 #define STAT    0xFF41

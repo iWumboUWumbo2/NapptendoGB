@@ -1,4 +1,4 @@
-#include "NapptendoGB/bus.h"
+#include "bus.h"
 
 uint8_t bus_read(bus_t* bus, uint16_t addr) {
     if ((addr >= 0x4000) && (addr < 0x8000)) {
@@ -137,7 +137,7 @@ void bus_change_lo_rombank(bus_t* bus, uint8_t data) {
 
 void bus_change_hi_rombank(bus_t* bus, uint8_t data) {
     bus->curr_rombank &= 0x1F; // Clear upper 3 bits of current rombank
-    bus->curr_rombank |= (data & 0xE0); // Clear lower 5 bits of data
+    bus->curr_rombank |= ((data & 0x07) << 5); // Set upper 3 bits from data bits 0-2
     if (bus->curr_rombank == 0) bus->curr_rombank++;
 }
 
@@ -239,6 +239,7 @@ void bus_detect_rombank_mode(bus_t* bus) {
         case 0x1D:
         case 0x1E:
             SET_MBC(5);
+            break;
         default:
             break;
     }
@@ -276,7 +277,7 @@ void bus_create_rambanks(bus_t* bus) {
         memset(bus->rambanks[i].data, 0, BNK_SIZE);
     }
 
-    memcpy(bus->rambanks[0].data, &bus->rom[0xA000], 0x2000);
+    // Initialize RAM banks to 0 (already done in loop above)
 }
 
 void bus_free_rambanks(bus_t* bus) {

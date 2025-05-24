@@ -1,4 +1,4 @@
-#include "NapptendoGB/timers.h"
+#include "timers.h"
 
 const uint16_t CLOCK_FREQS[] = {1024, 16, 64, 256};
 
@@ -28,7 +28,7 @@ void timer_divider_reg(timergb_t* timer, uint8_t cycles) {
 
     timer->divider_counter += cycles;
 
-    if (timer->divider_counter >= 255) {
+    if (timer->divider_counter >= 256) { // DIV increments every 256 cycles
         timer->divider_counter = 0;
         timer->bus->rom[DIV]++;
     }

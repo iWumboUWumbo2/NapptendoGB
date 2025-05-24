@@ -1,4 +1,4 @@
-#include "NapptendoGB/gpu.h"
+#include "gpu.h"
 
 void gpu_reset_screen(gpu_t* gpu) {
     uint8_t x, y;
@@ -9,6 +9,7 @@ void gpu_reset_screen(gpu_t* gpu) {
             gpu->screen_data[x][y][2] = 0xFF ;
         }
     }
+    gpu->scanln_ctr = 456; // Initialize scanline counter
 }
 
 uint8_t gpu_lcd_enabled(gpu_t* gpu) {
@@ -37,16 +38,16 @@ void gpu_update_graphics(gpu_t* gpu) {
             gpu->bus->rom[LY]++;
 
             uint8_t currln = bus_read(gpu->bus, LY);
-            gpu->scanln_ctr = 456;
+            gpu->scanln_ctr += 456; // Add, don't set to avoid drift
 
             // Request VBlank interrupt
-            if (currln == 0x90) {
+            if (currln == 144) { // 0x90 = 144
                 interrupt_req(gpu->bus->interrupt, 0);
             }
-            else if (currln >= 0x9A) {
+            else if (currln >= 154) { // 0x9A = 154
                 gpu->bus->rom[LY] = 0;
             }
-            else if (currln < 0x90) {
+            else if (currln < 144) { // Draw visible scanlines
                 gpu_draw_scanline(gpu);
             }
         }
@@ -147,13 +148,12 @@ void gpu_draw_tiles(gpu_t* gpu) {
 
         uint16_t tile_col = posX / 8;
         uint16_t tile_adr = bg_mem + tile_row + tile_col;
-        uint16_t tile_num = bus_read(gpu->bus, tile_adr);
-        if (is_unsign_addr) {
-            tile_num |= (tile_num & 0x80) ? 0xFF00 : 0x0000;
+        int16_t tile_num = bus_read(gpu->bus, tile_adr);
+        if (!is_unsign_addr) {
+            tile_num = (int8_t)tile_num; // Sign extend for signed addressing
         }
 
-        uint16_t tile_loc =
-                bgwin_tile_data + ((tile_num + (is_unsign_addr ? 0 : 128)) * 16);
+        uint16_t tile_loc = bgwin_tile_data + ((tile_num + (is_unsign_addr ? 0 : 128)) * 16);
         uint8_t line = (posY % 8) * 2;
         uint8_t data1 = bus_read(gpu->bus, tile_loc + line),
                 data2 = bus_read(gpu->bus, tile_loc + line + 1);
@@ -180,12 +180,12 @@ void gpu_draw_tiles(gpu_t* gpu) {
         }
 
         ly = bus_read(gpu->bus, LY);
-        if (ly < 0 || ly > 143 || pix < 0 || pix > 159)
+        if (ly > 143 || pix > 159)
             continue;
 
-        gpu->screen_data[pix][ly][0] = red;
-        gpu->screen_data[pix][ly][1] = green;
-        gpu->screen_data[pix][ly][2] = blue;
+        gpu->screen_data[ly][pix][0] = red;
+        gpu->screen_data[ly][pix][1] = green;
+        gpu->screen_data[ly][pix][2] = blue;
     }
 }
 
@@ -196,9 +196,11 @@ enum Color gpu_get_color(gpu_t* gpu, uint8_t color_num, uint16_t addr) {
 }
 
 void gpu_draw_sprites(gpu_t* gpu) {
-    uint8_t is8x16 = (bus_read(gpu->bus, LCDC) >> 1) & 1;
+    uint8_t is8x16 = (bus_read(gpu->bus, LCDC) >> 2) & 1;
     uint8_t sprite;
-    for (sprite = 0; sprite < 40; sprite++) {
+    uint8_t sprites_drawn = 0;
+    
+    for (sprite = 0; sprite < 40 && sprites_drawn < 10; sprite++) {
         uint8_t index = sprite * 4;
         uint8_t posX = bus_read(gpu->bus, 0xFE00 + index + 1) - 8;
         uint8_t posY = bus_read(gpu->bus, 0xFE00 + index) - 16;
@@ -212,16 +214,27 @@ void gpu_draw_sprites(gpu_t* gpu) {
         uint8_t ly = bus_read(gpu->bus, LY);
 
         if (ly >= posY && ly < (posY + szY)) {
+            sprites_drawn++;
+            
             uint8_t curr_line = ly - posY;
             if (flipY)
-                curr_line = szY - curr_line;
+                curr_line = (szY - 1) - curr_line;
             curr_line *= 2;
 
-            uint16_t data_addr = curr_line + (0x8000 + tileloc * 16);
+            uint16_t actual_tile = tileloc;
+            if (is8x16) {
+                actual_tile &= 0xFE; // Use even tile for 8x16
+                if (curr_line >= 16) {
+                    actual_tile |= 1; // Use odd tile for bottom half
+                    curr_line -= 16;
+                }
+            }
+            
+            uint16_t data_addr = 0x8000 + (actual_tile * 16) + curr_line;
             uint8_t data1 = bus_read(gpu->bus, data_addr);
             uint8_t data2 = bus_read(gpu->bus, data_addr + 1);
 
-            uint8_t tilepx;
+            int8_t tilepx;
             for (tilepx = 7; tilepx >= 0; tilepx--) {
                 uint8_t color_bit = tilepx;
                 if (flipX)
@@ -230,7 +243,7 @@ void gpu_draw_sprites(gpu_t* gpu) {
                         (((data2 >> color_bit) & 1) << 1) | ((data1 >> color_bit) & 1);
                 uint16_t color_addr = (attr & 0x10) ? 0xFF49 : 0xFF48;
                 enum Color color = gpu_get_color(gpu, color_num, color_addr);
-                if (color == WHITE) continue;
+                if (color_num == 0) continue; // Color 0 is transparent for sprites
 
                 uint8_t red, green, blue;
                 switch (color) {
@@ -252,12 +265,17 @@ void gpu_draw_sprites(gpu_t* gpu) {
                 uint8_t pix = pixX + posX;
 
                 ly = bus_read(gpu->bus, LY);
-                if (ly < 0 || ly > 143 || pix < 0 || pix > 159)
+                if (ly > 143 || pix > 159)
                     continue;
 
-                gpu->screen_data[pix][ly][0] = red;
-                gpu->screen_data[pix][ly][1] = green;
-                gpu->screen_data[pix][ly][2] = blue;
+                // Check BG-to-OAM priority
+                if ((attr & 0x80) && gpu->screen_data[ly][pix][0] != 0xFF) {
+                    continue; // BG has priority and isn't white
+                }
+
+                gpu->screen_data[ly][pix][0] = red;
+                gpu->screen_data[ly][pix][1] = green;
+                gpu->screen_data[ly][pix][2] = blue;
             }
         }
     }

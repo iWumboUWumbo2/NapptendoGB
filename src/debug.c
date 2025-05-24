@@ -1,5 +1,5 @@
-#include "NapptendoGB/cpu.h"
-#include "NapptendoGB/debug.h"
+#include "cpu.h"
+#include "debug.h"
 
 void debug_print_opcode(cpu_t* cpu) {
     printf("OP: 0x%04x ", cpu->opcode);

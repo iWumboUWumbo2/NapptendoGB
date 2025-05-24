@@ -5,18 +5,13 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include "types.h"
 
 #include "cpu.h"
 #include "interrupts.h"
 #include "timers.h"
 #include "gpu.h"
 #include "controls.h"
-
-typedef struct bus bus_t;
-typedef struct cpu cpu_t;
-typedef struct timer timergb_t;
-typedef struct interrupt interrupt_t;
-typedef struct gpu gpu_t;
 
 #define ROM_SIZE    0x10000
 #define GMB_SIZE    0x800000

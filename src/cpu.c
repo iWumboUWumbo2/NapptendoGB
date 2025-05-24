@@ -1,4 +1,4 @@
-#include "NapptendoGB/cpu.h"
+#include "cpu.h"
 
 uint8_t cpu_read(cpu_t* cpu, uint16_t addr) {
     cpu->cycles++;
@@ -1259,6 +1259,7 @@ void cpu_reset(cpu_t* cpu) {
     cpu->cycles = 0x00;
     cpu->stopped = 0x00;
     cpu->halted = 0x00;
+    cpu->IME = 0;
 
     cpu->regs.afReg.AF = 0x01B0;
     cpu->regs.bcReg.BC = 0x0013;
@@ -1300,31 +1301,43 @@ void cpu_reset(cpu_t* cpu) {
 
 void cpu_clock(cpu_t* cpu) {
     if (cpu->stopped) return;
-    if (cpu->halted && cpu->bus->interrupt->IME) return;
+    
+    // Check for interrupts first
+    interrupt_perform(cpu->bus->interrupt);
+    
+    // If halted, only execute if not halted anymore (woken by interrupt)
+    if (cpu->halted) return;
+    
+    if (cpu->cycles == 0) {
+        uint8_t tmpcode = cpu_read(cpu, cpu->PC++);
+        cpu->opcode = (tmpcode == 0xCB || tmpcode == 0x10)
+                      ? ((tmpcode << 8) + cpu_read(cpu, cpu->PC++))
+                      : tmpcode & 0x00FF;
 
-    uint8_t tmpcode = cpu_read(cpu, cpu->PC++);
-    cpu->opcode = (tmpcode == 0xCB || tmpcode == 0x10)
-                  ? ((tmpcode << 8) + cpu_read(cpu, cpu->PC++))
-                  : tmpcode & 0x00FF;
+        cpu_fetch(cpu);
+        cpu_execute(cpu);
 
-    cpu_fetch(cpu);
-    cpu_execute(cpu);
-
-    // Scale machine cycle to clock cycle
-    cpu->cycles *= 4;
-
-    cpu->regs.afReg.AF &= 0xFFF0;
+        cpu->regs.afReg.AF &= 0xFFF0; // Clear lower 4 bits of F register
+        
+        // Don't scale cycles here - they're already correct
+        if (cpu->cycles == 0) cpu->cycles = 1; // Minimum 1 cycle per instruction
+    }
+    
+    cpu->cycles--;
 }
 
 void NOP(cpu_t* cpu) {
+    cpu->cycles += 1; // NOP takes 1 machine cycle
 }
 
 void LD_reg16_d16(cpu_t* cpu, uint16_t* reg16) {
     *reg16 = cpu->fetched;
+    cpu->cycles += 3;
 }
 
 void LD_mem16_reg8(cpu_t* cpu, uint16_t memreg16, uint8_t reg8) {
     cpu_write(cpu, memreg16, reg8);
+    cpu->cycles += 2;
 }
 
 void INC_reg16(cpu_t* cpu, uint16_t* reg16) {
@@ -1337,6 +1350,7 @@ void INC_reg8(cpu_t* cpu, uint8_t* reg8) {
     SHIFT_SET(H_SHFT, IS_HALF_CARRY_8(*reg8, 1));
     (*reg8)++;
     SHIFT_SET(Z_SHFT, *reg8 == 0x00);
+    cpu->cycles += 1;
 }
 
 void DEC_reg8(cpu_t* cpu, uint8_t* reg8) {
@@ -1345,10 +1359,12 @@ void DEC_reg8(cpu_t* cpu, uint8_t* reg8) {
     SHIFT_SET(H_SHFT, IS_HALF_CARRY_8_SUB(*reg8, 1));
     (*reg8)--;
     SHIFT_SET(Z_SHFT, *reg8 == 0x00);
+    cpu->cycles += 1;
 }
 
 void LD_reg8_d8(cpu_t* cpu, uint8_t* reg8) {
     *reg8 = (uint8_t) (cpu->fetched & 0x00FF);
+    cpu->cycles += 2;
 }
 
 void RLCA(cpu_t* cpu) {
@@ -1356,6 +1372,7 @@ void RLCA(cpu_t* cpu) {
     SHIFT_SET(C_SHFT, cpu->regs.afReg.b.A & 0x80);
     cpu->regs.afReg.b.A <<= 1;
     cpu->regs.afReg.b.A |= FLAGS_ISSET(C_FLAG);
+    cpu->cycles += 1;
 }
 
 void LD_mema16_SP(cpu_t* cpu) {
@@ -1389,11 +1406,18 @@ void RRCA(cpu_t* cpu) {
     SHIFT_SET(C_SHFT, cpu->regs.afReg.b.A & 1);
     cpu->regs.afReg.b.A >>= 1;
     cpu->regs.afReg.b.A |= (FLAGS_ISSET(C_FLAG) << 7);
+    cpu->cycles += 1;
 }
 
 void STOP(cpu_t* cpu) {
-    // TODO
-    cpu->stopped = 1;
+    // Check if joypad interrupt can wake from STOP
+    uint8_t req = bus_read(cpu->bus, 0xFF0F);
+    uint8_t enabled = bus_read(cpu->bus, 0xFFFF);
+    
+    // Only enter STOP if no joypad interrupt pending
+    if (!(req & enabled & 0x10)) {
+        cpu->stopped = 1;
+    }
     cpu->cycles -= 1;
 }
 
@@ -1406,7 +1430,7 @@ void RLA(cpu_t* cpu) {
 }
 
 void JR_s8(cpu_t* cpu) {
-    cpu->PC += cpu->fetched;
+    cpu->PC = (cpu->PC + (int8_t)cpu->fetched) & 0xFFFF;
     cpu->cycles += 1;
 }
 
@@ -1420,8 +1444,10 @@ void RRA(cpu_t* cpu) {
 
 void JR_Nflag_s8(cpu_t* cpu, uint8_t flag) {
     uint8_t flag_set = FLAGS_ISSET(flag);
-    cpu->PC += (!flag_set) ? cpu->fetched : 0;
-    cpu->cycles += (!flag_set);
+    if (!flag_set) {
+        cpu->PC = (cpu->PC + (int8_t)cpu->fetched) & 0xFFFF;
+        cpu->cycles += 1;
+    }
 }
 
 void DAA(cpu_t* cpu) {
@@ -1451,8 +1477,10 @@ void DAA(cpu_t* cpu) {
 
 void JR_flag_s8(cpu_t* cpu, uint8_t flag) {
     uint8_t flag_set = FLAGS_ISSET(flag);
-    cpu->PC += (flag_set) ? cpu->fetched : 0;
-    cpu->cycles += (flag_set);
+    if (flag_set) {
+        cpu->PC = (cpu->PC + (int8_t)cpu->fetched) & 0xFFFF;
+        cpu->cycles += 1;
+    }
 }
 
 void CPL(cpu_t* cpu) {
@@ -1491,16 +1519,27 @@ void LD_reg8_reg8(cpu_t* cpu, uint8_t* reg8to, uint8_t reg8from) {
 }
 
 void HALT(cpu_t* cpu) {
+    // Check for HALT bug: if IME=0 and interrupts pending, PC doesn't advance
+    if (!cpu->IME) {
+        uint8_t req = bus_read(cpu->bus, 0xFF0F);
+        uint8_t enabled = bus_read(cpu->bus, 0xFFFF);
+        if (req & enabled & 0x1F) {
+            // HALT bug: next instruction executed twice
+            cpu->PC--;
+            return;
+        }
+    }
     cpu->halted = 1;
 }
 
 void ADD_A_reg8(cpu_t* cpu, uint8_t reg8) {
-    FLAGS_CLR(N_FLAG);
+    FLAGS_CLR(Z_FLAG | N_FLAG | H_FLAG | C_FLAG);
     SHIFT_SET(H_SHFT, IS_HALF_CARRY_8(cpu->regs.afReg.b.A, reg8));
     uint16_t temp = (uint16_t) cpu->regs.afReg.b.A + (uint16_t) reg8;
     SHIFT_SET(C_SHFT, temp & 0xFF00);
-    SHIFT_SET(Z_SHFT, (temp & 0x00FF) == 0);
     cpu->regs.afReg.b.A = temp & 0x00FF;
+    SHIFT_SET(Z_SHFT, cpu->regs.afReg.b.A == 0);
+    cpu->cycles += 1;
 }
 
 void ADD_A_memHL(cpu_t* cpu) {
@@ -1509,12 +1548,14 @@ void ADD_A_memHL(cpu_t* cpu) {
 }
 
 void ADC_A_reg8(cpu_t* cpu, uint8_t reg8) {
-    FLAGS_CLR(N_FLAG);
-    SHIFT_SET(H_SHFT, IS_HALF_CARRY_8_3(cpu->regs.afReg.b.A, reg8, FLAGS_ISSET(C_FLAG)));
-    uint16_t temp = (uint16_t) cpu->regs.afReg.b.A + (uint16_t) reg8 + (uint16_t) FLAGS_ISSET(C_FLAG);
+    uint8_t carry = FLAGS_ISSET(C_FLAG) ? 1 : 0;
+    FLAGS_CLR(Z_FLAG | N_FLAG | H_FLAG | C_FLAG);
+    SHIFT_SET(H_SHFT, IS_HALF_CARRY_8_3(cpu->regs.afReg.b.A, reg8, carry));
+    uint16_t temp = (uint16_t) cpu->regs.afReg.b.A + (uint16_t) reg8 + (uint16_t) carry;
     SHIFT_SET(C_SHFT, temp & 0xFF00);
-    SHIFT_SET(Z_SHFT, (temp & 0x00FF) == 0);
     cpu->regs.afReg.b.A = temp & 0x00FF;
+    SHIFT_SET(Z_SHFT, cpu->regs.afReg.b.A == 0);
+    cpu->cycles += 1;
 }
 
 void ADC_A_memHL(cpu_t* cpu) {
@@ -1523,12 +1564,12 @@ void ADC_A_memHL(cpu_t* cpu) {
 }
 
 void SUB_reg8(cpu_t* cpu, uint8_t reg8) {
+    FLAGS_CLR(Z_FLAG | H_FLAG | C_FLAG);
     FLAGS_SET(N_FLAG);
     SHIFT_SET(H_SHFT, IS_HALF_CARRY_8_SUB(cpu->regs.afReg.b.A, reg8));
-    uint16_t temp = (uint16_t) cpu->regs.afReg.b.A - (uint16_t) reg8;
-    SHIFT_SET(C_SHFT, temp & 0xFF00);
-    SHIFT_SET(Z_SHFT, (temp & 0x00FF) == 0);
-    cpu->regs.afReg.b.A = temp & 0x00FF;
+    SHIFT_SET(C_SHFT, cpu->regs.afReg.b.A < reg8); // Borrow flag
+    cpu->regs.afReg.b.A -= reg8;
+    SHIFT_SET(Z_SHFT, cpu->regs.afReg.b.A == 0);
 }
 
 void SUB_memHL(cpu_t* cpu) {
@@ -1537,12 +1578,14 @@ void SUB_memHL(cpu_t* cpu) {
 }
 
 void SBC_A_reg8(cpu_t* cpu, uint8_t reg8) {
+    uint8_t carry = FLAGS_ISSET(C_FLAG) ? 1 : 0;
+    FLAGS_CLR(Z_FLAG | H_FLAG | C_FLAG);
     FLAGS_SET(N_FLAG);
-    SHIFT_SET(H_SHFT, IS_HALF_CARRY_8_3_SUB(cpu->regs.afReg.b.A, reg8, FLAGS_ISSET(C_FLAG)));
-    uint16_t temp = (uint16_t) cpu->regs.afReg.b.A + (uint16_t) -reg8 + (uint16_t) -FLAGS_ISSET(C_FLAG);
-    SHIFT_SET(C_SHFT, temp & 0xFF00);
-    SHIFT_SET(Z_SHFT, (temp & 0x00FF) == 0);
+    SHIFT_SET(H_SHFT, IS_HALF_CARRY_8_3_SUB(cpu->regs.afReg.b.A, reg8, carry));
+    uint16_t temp = cpu->regs.afReg.b.A - reg8 - carry;
+    SHIFT_SET(C_SHFT, temp > 0xFF); // Borrow occurred
     cpu->regs.afReg.b.A = temp & 0x00FF;
+    SHIFT_SET(Z_SHFT, cpu->regs.afReg.b.A == 0);
 }
 
 void SBC_A_memHL(cpu_t* cpu) {

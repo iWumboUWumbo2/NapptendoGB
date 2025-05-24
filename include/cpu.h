@@ -1,10 +1,8 @@
 #ifndef CPU_H
 #define CPU_H
 #include <stdint.h>
+#include "types.h"
 #include "bus.h"
-
-typedef struct cpu cpu_t;
-typedef struct bus bus_t;
 
 // Useful for setting multiple flags at once
 #define Z_FLAG  0x80
